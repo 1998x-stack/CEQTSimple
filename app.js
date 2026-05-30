@@ -50,6 +50,8 @@
     createdTimeline: $('#createdTimeline'),
     completedTimeline: $('#completedTimeline'),
     refreshBtn: $('#refreshBtn'),
+    deadlineInput: $('#deadlineInput'),
+    polishBtn: $('#polishBtn'),
   };
 
   let isDragging = false;
@@ -360,9 +362,10 @@
     $('#taskDesc').value = task ? (task.description || '') : '';
     $('#taskCategory').value = task ? task.category : 'other';
     $('#taskNotes').value = task ? (task.notes || '') : '';
-    $('#importanceSlider').value = task ? task.importance : (coords ? coords.importance : 4);
-    $('#urgencySelect').value = task ? task.urgency : (coords ? coords.urgency : 6);
+    $('#importanceSlider').value = task ? task.importance : (coords ? coords.importance : 5);
+    $('#urgencySelect').value = task ? task.urgency : (coords ? coords.urgency : 8);
     $('#reminderTime').value = task && task.reminderAt ? new Date(task.reminderAt).toISOString().slice(0, 16) : '';
+    $('#deadlineInput').value = task && task.deadline ? task.deadline.slice(0, 16) : '';
     updateImportanceDisplay();
     updateUrgencyDisplay();
     renderSubtasksInModal();
@@ -391,6 +394,7 @@
       importance: parseInt($('#importanceSlider').value),
       urgency: parseInt($('#urgencySelect').value),
       subtasks: tempSubtasks.map((s, i) => ({ ...s, order: i })),
+      deadline: $('#deadlineInput').value || null,
     };
 
     const reminderVal = $('#reminderTime').value;
@@ -425,6 +429,15 @@
 
   $('#importanceSlider').addEventListener('input', updateImportanceDisplay);
   $('#urgencySelect').addEventListener('change', updateUrgencyDisplay);
+
+  $('#deadlineInput').addEventListener('change', function() {
+    const dl = this.value;
+    if (dl) {
+      const reminderDate = new Date(new Date(dl).getTime() - 30 * 60000);
+      const iso = reminderDate.toISOString().slice(0, 16);
+      $('#reminderTime').value = iso;
+    }
+  });
 
   // === Subtask Management in Modal ===
   function renderSubtasksInModal() {
@@ -830,6 +843,42 @@
   // === Setup ===
   function setupEventListeners() {
     setupKeyboardShortcuts();
+
+    dom.refreshBtn.addEventListener('click', async function() {
+      dom.refreshBtn.style.transform = 'rotate(360deg)';
+      dom.refreshBtn.style.transition = 'transform 0.6s ease';
+      try {
+        await C.refreshTasks();
+        renderTasks();
+      } catch (e) {}
+      dom.refreshBtn.style.transform = 'rotate(0deg)';
+      dom.refreshBtn.style.transition = 'none';
+    });
+
+    if (dom.polishBtn) {
+      dom.polishBtn.addEventListener('click', async function() {
+        const title = $('#taskTitle').value.trim();
+        if (!title) { alert('请先输入任务标题'); return; }
+        dom.polishBtn.textContent = '⏳ 分析中...';
+        dom.polishBtn.disabled = true;
+        try {
+          const token = localStorage.getItem('ceqt_token');
+          const resp = await fetch('http://localhost:8000/api/polish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ task_title: title, task_description: $('#taskDesc').value.trim(), category: $('#taskCategory').value }),
+          });
+          const result = await resp.json();
+          tempSubtasks = result.subtasks.map((s, i) => ({ id: 'ps_' + Date.now() + i, text: s.text, done: false, order: i }));
+          renderSubtasksInModal();
+          if (result.suggested_importance) $('#importanceSlider').value = result.suggested_importance;
+          if (result.suggested_urgency) $('#urgencySelect').value = result.suggested_urgency;
+          updateImportanceDisplay();
+          updateUrgencyDisplay();
+        } catch (e) { alert('润色失败: ' + e.message); }
+        finally { dom.polishBtn.textContent = '✨ 润色'; dom.polishBtn.disabled = false; }
+      });
+    }
   }
 
   // === Init ===

@@ -121,10 +121,17 @@ def login(body: LoginRequest, db=Depends(get_db)):
     )
 
 
-@router.get("/me", response_model=UserResponse)
+# --- Reusable dependency for other routers ---
+
 def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_db)):
+    """Dependency: extract and validate current user from JWT token."""
     payload = _decode_token(token)
     user = db.execute("SELECT * FROM users WHERE id = ?", (payload["sub"],)).fetchone()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return UserResponse(id=user["id"], email=user["email"], created_at=user["created_at"])
+
+
+@router.get("/me", response_model=UserResponse)
+def get_current_user_endpoint(current_user: UserResponse = Depends(get_current_user)):
+    return current_user

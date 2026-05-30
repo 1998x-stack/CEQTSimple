@@ -75,6 +75,14 @@ def create_app() -> FastAPI:
     from routers.tasks import router as tasks_router
     app.include_router(tasks_router)
     
+    # Polish router
+    from routers.polish import router as polish_router
+    app.include_router(polish_router)
+
+    # Config router
+    from routers.config import router as config_router
+    app.include_router(config_router)
+
     # Health check
     @app.get("/api/health")
     async def health_check():

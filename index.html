@@ -23,6 +23,7 @@
       </div>
     </div>
     <div class="header-right">
+      <button class="theme-toggle" id="refreshBtn" title="刷新任务位置" style="font-size:18px;">🔄</button>
       <button class="theme-toggle" id="themeToggle" title="切换主题">🌙</button>
       <button class="workspace-badge" id="userBadge" title="用户">?</button>
     </div>
@@ -178,6 +179,10 @@
         </select>
       </div>
       <div class="form-group">
+        <label for="deadlineInput">截止时间</label>
+        <input type="datetime-local" id="deadlineInput">
+      </div>
+      <div class="form-group">
         <label>子任务</label>
         <ul class="subtask-list" id="subtaskList"></ul>
         <div class="subtask-add-row">
@@ -190,6 +195,7 @@
         <input type="datetime-local" id="reminderTime">
       </div>
       <div class="button-group">
+        <button class="btn btn-secondary" id="polishBtn" style="margin-right:auto;">✨ 润色</button>
         <button class="btn btn-secondary" id="taskCancelBtn">取消</button>
         <button class="btn btn-primary" id="taskSaveBtn">保存</button>
       </div>
