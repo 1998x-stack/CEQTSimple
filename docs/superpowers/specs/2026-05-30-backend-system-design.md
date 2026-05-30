@@ -568,3 +568,42 @@ class NotionImportPlugin(AbstractPlugin):
 - **Chinese UI** — all labels, error messages, prompts in zh-CN.
 - **Backward compatible** — old localStorage data migrates to backend.
 - **Offline capable** — frontend falls back to localStorage if backend unreachable.
+
+---
+
+## Grilling Resolutions (2026-05-30)
+
+| # | Topic | Resolution |
+|---|---|---|
+| Q1 | "Workspace" vs "User Account" | Workspace concept retired. CONTEXT.md updated to "User Account." Login/Register modal replaces workspace selector. |
+| Q2 | Time-decay label imprecision | Mapping kept as-is. Accept label fuzziness at extreme urgency levels. |
+| Q3 | Polish endpoint requires task_id | Changed to `POST /api/polish` (no task_id). Pure LLM call, no DB side-effect. Task context optional. |
+| Q4 | `polish_data` duplicates subtasks | Narrowed to metadata only (model, reasoning, suggestions). Actual subtasks stored in subtasks table. |
+| Q5 | Offline sync conflict resolution | Last-write-wins via `updated_at` timestamp comparison on reconnect. |
+| Q6 | Migration user association | Backend assigns `user_id` from JWT, generates new UUIDs for task IDs. |
+| Q7 | SQLite boolean conversion | Keep `INTEGER` in DB. Pydantic validators handle 0/1 ↔ false/true conversion in API. |
+
+### Spec Fixes Applied
+
+**Polish endpoint** (Phase 5.2): Changed from `POST /api/tasks/{id}/polish` to `POST /api/polish`:
+```
+POST /api/polish
+  Body: { "task_title": "...", "task_description": "...", "category": "work" }
+  Response: { "subtasks": [...], "suggested_importance": 5, ... }
+```
+
+**`polish_data` field** (Phase 1.2): Stores metadata only:
+```json
+{
+  "model": "deepseek-v4-flash",
+  "reasoning": "...",
+  "suggested_importance": 5,
+  "suggested_urgency": 6,
+  "suggested_category": "work",
+  "polished_at": "2026-05-30T10:00:00Z"
+}
+```
+
+**Migration** (Phase 3.5): Backend assigns `user_id` from JWT, generates new UUIDs for task/subtask IDs. All other fields preserved.
+
+**Boolean fields** (Phase 1.2): `tasks.completed` and `subtasks.done` stored as `INTEGER` (0/1) in SQLite. Pydantic response models convert to `bool` in API responses.
