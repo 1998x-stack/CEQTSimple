@@ -220,5 +220,5 @@ def migrate_tasks(body: list[dict], user=Depends(get_current_user), db=Depends(g
                        (uuid.uuid4().hex, task_id, st.get("text",""), 1 if st.get("done") else 0, st.get("order",0)))
         migrated += 1
     db.commit()
-    logger.info(f"Migrated {migrated} tasks for user {user['email']}")
+    logger.info(f"Migrated {migrated} tasks for user {user.email}")
     return {"migrated": migrated, "failed": 0}
