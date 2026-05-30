@@ -1,214 +1,248 @@
-// data.js — State management, localStorage CRUD
+// data.js — API client + localStorage fallback
 // Attaches to window.CEQT. Load BEFORE app.js.
 
 (function() {
   'use strict';
 
-  // State
+  const API_BASE = 'http://localhost:8000/api';
+  let authToken = localStorage.getItem('ceqt_token');
+  let userEmail = localStorage.getItem('ceqt_email') || '';
+
+  // State (kept for offline fallback + UI reactivity)
   const state = {
-    currentWorkspace: null,
     tasks: [],
     darkMode: true,
-    activeView: 'matrix', // 'matrix' | 'list' | 'profile'
+    activeView: 'matrix',
+    userEmail: userEmail,
     filters: {
       search: '',
       category: null,
-      importanceMin: null,
-      importanceMax: null,
       showCompleted: false,
     },
   };
 
-  // localStorage keys
-  const KEYS = {
-    workspace: function() {
-      // Fallback: check legacy 'currentUser' key
-      return localStorage.getItem('currentUser') || localStorage.getItem('currentWorkspace');
-    },
-    setWorkspace: function(name) {
-      localStorage.setItem('currentWorkspace', name);
-    },
-    tasks: function(ws) { return 'tasks_' + ws; },
-    prefs: function(ws) { return 'prefs_' + ws; },
-  };
-
-  function saveToStorage(key, value) {
+  // === API Helpers ===
+  async function apiFetch(path, options = {}) {
     try {
-      localStorage.setItem(key, JSON.stringify(value));
-    } catch (e) {
-      if (e.name === 'QuotaExceededError') {
-        alert('存储空间不足！请清理一些旧任务。');
+      const res = await fetch(API_BASE + path, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
+          ...options.headers,
+        },
+      });
+      if (res.status === 401) {
+        authToken = null;
+        localStorage.removeItem('ceqt_token');
+        window.dispatchEvent(new CustomEvent('auth-expired'));
+        throw new Error('Unauthorized');
       }
-    }
-  }
-
-  function loadFromStorage(key, fallback) {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : fallback;
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      return res.json();
     } catch (e) {
-      return fallback;
+      if (e.message === 'Failed to fetch' || e.name === 'TypeError') {
+        return fallbackLocalStorage(path, options);
+      }
+      throw e;
     }
   }
 
-  function switchWorkspace(name) {
-    if (!name || !name.trim()) return false;
-    name = name.trim();
-    state.currentWorkspace = name;
-    KEYS.setWorkspace(name);
-    state.tasks = loadFromStorage(KEYS.tasks(name), []);
-    const prefs = loadFromStorage(KEYS.prefs(name), {});
-    state.darkMode = prefs.darkMode !== undefined ? prefs.darkMode : true;
-    state.activeView = prefs.activeView || 'matrix';
-    state.filters = prefs.filters || { search: '', category: null, importanceMin: null, importanceMax: null, showCompleted: false };
-    applyTheme();
-    return true;
+  function fallbackLocalStorage(path, options) {
+    const body = options.body ? JSON.parse(options.body) : null;
+    const idMatch = path.match(/\/api\/tasks\/([^/]+)(\/complete)?/);
+
+    if (path === '/api/tasks' && (!options.method || options.method === 'GET'))
+      return getFilteredTasks();
+    if (path === '/api/tasks' && options.method === 'POST')
+      return addTaskLocal(body);
+    if (idMatch && (options.method === 'PUT'))
+      return updateTaskLocal(idMatch[1], body);
+    if (idMatch && (options.method === 'DELETE'))
+      return deleteTaskLocal(idMatch[1]);
+    if (idMatch && idMatch[2] === '/complete')
+      return completeTaskLocal(idMatch[1]);
+    if (path === '/api/tasks/refresh')
+      return getActiveTasks();
+    if (path === '/api/auth/me')
+      return Promise.resolve({ user: { email: userEmail, id: 'offline' } });
+    if (path === '/api/auth/login' || path === '/api/auth/register')
+      return Promise.resolve({ token: 'offline', user: { email: userEmail || 'offline', id: 'offline' } });
+    if (path === '/api/polish')
+      throw new Error('润色功能需要服务器连接');
+    throw new Error('Offline');
   }
 
-  function saveTasks() {
-    if (!state.currentWorkspace) return;
-    saveToStorage(KEYS.tasks(state.currentWorkspace), state.tasks);
+  // === Auth ===
+  async function login(email, password) {
+    const res = await apiFetch('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+    authToken = res.token;
+    userEmail = res.user.email;
+    state.userEmail = userEmail;
+    localStorage.setItem('ceqt_token', authToken);
+    localStorage.setItem('ceqt_email', userEmail);
+    await loadTasks();
+    return res;
+  }
+
+  async function register(email, password) {
+    const res = await apiFetch('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+    authToken = res.token;
+    userEmail = res.user.email;
+    state.userEmail = userEmail;
+    localStorage.setItem('ceqt_token', authToken);
+    localStorage.setItem('ceqt_email', userEmail);
+    return res;
+  }
+
+  async function checkAuth() {
+    if (!authToken) return false;
+    try {
+      await apiFetch('/api/auth/me');
+      await loadTasks();
+      return true;
+    } catch {
+      authToken = null;
+      localStorage.removeItem('ceqt_token');
+      return false;
+    }
+  }
+
+  async function loadTasks() {
+    if (authToken) {
+      try { state.tasks = await apiFetch('/api/tasks'); migrateIfNeeded(); }
+      catch { state.tasks = []; }
+    }
     dispatchChange();
   }
 
-  function savePrefs() {
-    if (!state.currentWorkspace) return;
-    saveToStorage(KEYS.prefs(state.currentWorkspace), {
-      darkMode: state.darkMode,
-      activeView: state.activeView,
-      filters: state.filters,
-    });
+  async function migrateIfNeeded() {
+    const allTasks = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('tasks_')) {
+        try { allTasks.push(...JSON.parse(localStorage.getItem(key))); } catch {}
+      }
+    }
+    if (allTasks.length > 0) {
+      try {
+        await apiFetch('/api/tasks/migrate', { method: 'POST', body: JSON.stringify(allTasks) });
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const key = localStorage.key(i);
+          if (key && (key.startsWith('tasks_') || key === 'currentUser' || key === 'currentWorkspace'))
+            localStorage.removeItem(key);
+        }
+      } catch {}
+    }
   }
 
-  function addTask(taskData) {
-    const task = {
-      id: Date.now().toString(),
-      title: taskData.title,
-      description: taskData.description || '',
-      category: taskData.category || 'other',
-      importance: taskData.importance || 4,
-      urgency: taskData.urgency || 6,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      completed: false,
-      completedAt: null,
-      subtasks: [],
-      notes: '',
-      reminderAt: null,
-    };
+  // === Task CRUD ===
+  async function addTask(taskData) {
+    const task = await apiFetch('/api/tasks', { method: 'POST', body: JSON.stringify(taskData) });
     state.tasks.push(task);
-    saveTasks();
+    dispatchChange();
     return task;
   }
 
-  function updateTask(id, updates) {
+  async function updateTask(id, updates) {
+    const task = await apiFetch(`/api/tasks/${id}`, { method: 'PUT', body: JSON.stringify(updates) });
+    const idx = state.tasks.findIndex(t => t.id === id);
+    if (idx !== -1) state.tasks[idx] = task;
+    dispatchChange();
+    return task;
+  }
+
+  async function deleteTask(id) {
+    await apiFetch(`/api/tasks/${id}`, { method: 'DELETE' });
+    state.tasks = state.tasks.filter(t => t.id !== id);
+    dispatchChange();
+  }
+
+  async function completeTask(id) {
+    await apiFetch(`/api/tasks/${id}/complete`, { method: 'POST' });
+    const task = state.tasks.find(t => t.id === id);
+    if (task) { task.completed = true; task.completedAt = new Date().toISOString(); }
+    dispatchChange();
+    return task;
+  }
+
+  async function refreshTasks() {
+    const tasks = await apiFetch('/api/tasks/refresh', { method: 'POST' });
+    tasks.forEach(t => {
+      const idx = state.tasks.findIndex(l => l.id === t.id);
+      if (idx !== -1) state.tasks[idx] = t;
+    });
+    dispatchChange();
+    return tasks;
+  }
+
+  // === Local fallback ===
+  function addTaskLocal(data) {
+    const task = {
+      id: Date.now().toString(), title: data.title, description: data.description || '',
+      category: data.category || 'other', importance: data.importance || 5, urgency: data.urgency || 8,
+      deadline: data.deadline || null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      completed: false, subtasks: (data.subtasks||[]).map((s,i) => ({id:'s'+Date.now()+i,text:s.text,done:false,order:i})),
+      notes: data.notes || '', reminderAt: data.reminderAt || null,
+    };
+    state.tasks.push(task);
+    dispatchChange();
+    return task;
+  }
+
+  function updateTaskLocal(id, updates) {
     const idx = state.tasks.findIndex(t => t.id === id);
     if (idx === -1) return null;
     Object.assign(state.tasks[idx], updates, { updatedAt: new Date().toISOString() });
-    saveTasks();
+    dispatchChange();
     return state.tasks[idx];
   }
 
-  function deleteTask(id) {
-    state.tasks = state.tasks.filter(t => t.id !== id);
-    saveTasks();
-  }
-
-  function completeTask(id) {
-    const task = state.tasks.find(t => t.id === id);
-    if (!task) return null;
-    task.completed = true;
-    task.completedAt = new Date().toISOString();
-    task.updatedAt = new Date().toISOString();
-    saveTasks();
-    return task;
-  }
-
-  function initSampleData() {
-    if (state.tasks.length > 0) return;
-    const now = Date.now();
-    const d = (days) => new Date(now - days * 86400000).toISOString();
-    state.tasks = [
-      { id: '1', title: '完成项目报告', description: '准备季度总结报告，包括数据分析和建议', category: 'work', importance: 6, urgency: 7, createdAt: d(2), updatedAt: d(2), completed: false, completedAt: null, subtasks: [{id:'s1',text:'收集数据',done:true,order:0},{id:'s2',text:'编写分析',done:false,order:1},{id:'s3',text:'制作PPT',done:false,order:2}], notes: '', reminderAt: null },
-      { id: '2', title: '健身锻炼', description: '每周至少3次有氧运动', category: 'health', importance: 5, urgency: 3, createdAt: d(5), updatedAt: d(5), completed: false, completedAt: null, subtasks: [], notes: '', reminderAt: null },
-      { id: '3', title: '学习新技能', description: '学习React和Vue框架', category: 'study', importance: 4, urgency: 1, createdAt: d(7), updatedAt: d(1), completed: true, completedAt: d(1), subtasks: [], notes: '', reminderAt: null },
-      { id: '4', title: '团队会议', description: '每周团队例会，讨论项目进展', category: 'work', importance: 5, urgency: 6, createdAt: d(1), updatedAt: d(1), completed: false, completedAt: null, subtasks: [], notes: '', reminderAt: null },
-      { id: '5', title: '家庭聚餐', description: '周末家庭聚餐，预定餐厅', category: 'family', importance: 3, urgency: 4, createdAt: d(3), updatedAt: d(3), completed: false, completedAt: null, subtasks: [], notes: '', reminderAt: null },
-      { id: '6', title: '阅读书籍', description: '完成《深度工作》阅读', category: 'personal', importance: 4, urgency: 2, createdAt: d(4), updatedAt: d(4), completed: false, completedAt: null, subtasks: [], notes: '', reminderAt: null },
-      { id: '7', title: '整理邮箱', description: '清理收件箱，归档重要邮件', category: 'other', importance: 2, urgency: 8, createdAt: d(1), updatedAt: d(1), completed: false, completedAt: null, subtasks: [], notes: '', reminderAt: null },
-      { id: '8', title: '预约体检', description: '年度健康体检', category: 'health', importance: 5, urgency: 2, createdAt: d(3), updatedAt: d(3), completed: false, completedAt: null, subtasks: [{id:'s4',text:'选择医院',done:false,order:0},{id:'s5',text:'预约时间',done:false,order:1}], notes: '需要空腹检查', reminderAt: new Date(now + 86400000).toISOString() },
-    ];
-    saveTasks();
-  }
-
-  function applyTheme() {
-    document.documentElement.setAttribute('data-theme', state.darkMode ? 'dark' : 'light');
-  }
-
-  function toggleTheme() {
-    state.darkMode = !state.darkMode;
-    applyTheme();
-    savePrefs();
+  function deleteTaskLocal(id) { state.tasks = state.tasks.filter(t => t.id !== id); dispatchChange(); }
+  function completeTaskLocal(id) {
+    const t = state.tasks.find(t => t.id === id);
+    if (t) { t.completed = true; t.completedAt = new Date().toISOString(); }
     dispatchChange();
+    return t;
   }
 
-  function setView(view) {
-    state.activeView = view;
-    savePrefs();
-    dispatchChange();
-  }
-
-  function setFilter(key, value) {
-    state.filters[key] = value;
-    savePrefs();
-    dispatchChange();
-  }
-
+  // === Filters ===
   function getFilteredTasks() {
     return state.tasks.filter(t => {
       if (state.filters.search) {
         const q = state.filters.search.toLowerCase();
-        const matchTitle = t.title.toLowerCase().includes(q);
-        const matchDesc = (t.description || '').toLowerCase().includes(q);
-        const matchNotes = (t.notes || '').toLowerCase().includes(q);
-        if (!matchTitle && !matchDesc && !matchNotes) return false;
+        if (!t.title.toLowerCase().includes(q) && !(t.description||'').toLowerCase().includes(q) && !(t.notes||'').toLowerCase().includes(q)) return false;
       }
       if (state.filters.category && t.category !== state.filters.category) return false;
-      if (state.filters.importanceMin !== null && t.importance < state.filters.importanceMin) return false;
-      if (state.filters.importanceMax !== null && t.importance > state.filters.importanceMax) return false;
       if (!state.filters.showCompleted && t.completed) return false;
       return true;
     });
   }
 
-  function getActiveTasks() {
-    return state.tasks.filter(t => !t.completed);
-  }
+  function getActiveTasks() { return state.tasks.filter(t => !t.completed); }
+  function getCompletedTasks() { return state.tasks.filter(t => t.completed); }
 
-  function getCompletedTasks() {
-    return state.tasks.filter(t => t.completed);
-  }
+  function setView(view) { state.activeView = view; dispatchChange(); }
+  function setFilter(key, value) { state.filters[key] = value; dispatchChange(); }
 
-  function dispatchChange() {
-    window.dispatchEvent(new CustomEvent('state-changed', { detail: state }));
-  }
+  function applyTheme() { document.documentElement.setAttribute('data-theme', state.darkMode ? 'dark' : 'light'); }
+  function toggleTheme() { state.darkMode = !state.darkMode; applyTheme(); dispatchChange(); }
 
-  // Export
+  function dispatchChange() { window.dispatchEvent(new CustomEvent('state-changed', { detail: state })); }
+
   window.CEQT = {
-    state,
-    switchWorkspace,
-    addTask,
-    updateTask,
-    deleteTask,
-    completeTask,
-    saveTasks,
-    toggleTheme,
-    setView,
-    setFilter,
-    getFilteredTasks,
-    getActiveTasks,
-    getCompletedTasks,
-    initSampleData,
-    applyTheme,
+    state, login, register, checkAuth, loadTasks,
+    addTask, updateTask, deleteTask, completeTask, refreshTasks,
+    toggleTheme, setView, setFilter,
+    getFilteredTasks, getActiveTasks, getCompletedTasks, applyTheme,
   };
 })();

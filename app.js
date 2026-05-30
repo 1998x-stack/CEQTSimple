@@ -18,10 +18,17 @@
   const $$ = (sel) => document.querySelectorAll(sel);
 
   const dom = {
-    workspaceModal: $('#workspaceModal'),
-    workspaceName: $('#workspaceName'),
-    workspaceEnterBtn: $('#workspaceEnterBtn'),
-    workspaceBadge: $('#workspaceBadge'),
+    authModal: $('#authModal'),
+    loginEmail: $('#loginEmail'),
+    loginPassword: $('#loginPassword'),
+    loginBtn: $('#loginBtn'),
+    registerEmail: $('#registerEmail'),
+    registerPassword: $('#registerPassword'),
+    registerBtn: $('#registerBtn'),
+    authTabs: $('#authTabs'),
+    loginError: $('#loginError'),
+    registerError: $('#registerError'),
+    userBadge: $('#userBadge'),
     mainContainer: $('#mainContainer'),
     themeToggle: $('#themeToggle'),
     matrix: $('#matrix'),
@@ -42,6 +49,7 @@
     statsGrid: $('#statsGrid'),
     createdTimeline: $('#createdTimeline'),
     completedTimeline: $('#completedTimeline'),
+    refreshBtn: $('#refreshBtn'),
   };
 
   let isDragging = false;
@@ -51,35 +59,68 @@
   let tempSubtasks = [];
   let categoryChart = null;
 
-  // === Workspace Entry ===
-  function initWorkspace() {
-    const saved = localStorage.getItem('currentWorkspace') || localStorage.getItem('currentUser');
-    if (saved && C.switchWorkspace(saved)) {
+  // === Auth Init ===
+  async function initAuth() {
+    const authed = await C.checkAuth();
+    if (authed) {
       showApp();
       return;
     }
-    dom.workspaceModal.classList.add('open');
-    dom.workspaceName.focus();
+    dom.authModal.classList.add('open');
+    setupAuthListeners();
   }
 
-  dom.workspaceEnterBtn.addEventListener('click', enterWorkspace);
-  dom.workspaceName.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') enterWorkspace();
-  });
+  function setupAuthListeners() {
+    // Tab switching
+    dom.authTabs.addEventListener('click', function(e) {
+      const btn = e.target.closest('.view-btn');
+      if (!btn) return;
+      dom.authTabs.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('loginForm').style.display = btn.dataset.tab === 'login' ? 'block' : 'none';
+      document.getElementById('registerForm').style.display = btn.dataset.tab === 'register' ? 'block' : 'none';
+    });
 
-  function enterWorkspace() {
-    const name = dom.workspaceName.value.trim();
-    if (!name) return;
-    if (C.switchWorkspace(name)) {
-      dom.workspaceModal.classList.remove('open');
+    dom.loginBtn.addEventListener('click', handleLogin);
+    dom.registerBtn.addEventListener('click', handleRegister);
+    dom.loginPassword.addEventListener('keydown', function(e) { if (e.key === 'Enter') handleLogin(); });
+    dom.registerPassword.addEventListener('keydown', function(e) { if (e.key === 'Enter') handleRegister(); });
+  }
+
+  async function handleLogin() {
+    const email = dom.loginEmail.value.trim();
+    const pwd = dom.loginPassword.value;
+    dom.loginError.style.display = 'none';
+    if (!email || !pwd) { dom.loginError.textContent = '请填写邮箱和密码'; dom.loginError.style.display = 'block'; return; }
+    try {
+      await C.login(email, pwd);
+      dom.authModal.classList.remove('open');
       showApp();
+    } catch (e) {
+      dom.loginError.textContent = '登录失败: ' + e.message;
+      dom.loginError.style.display = 'block';
+    }
+  }
+
+  async function handleRegister() {
+    const email = dom.registerEmail.value.trim();
+    const pwd = dom.registerPassword.value;
+    dom.registerError.style.display = 'none';
+    if (!email || !pwd) { dom.registerError.textContent = '请填写邮箱和密码'; dom.registerError.style.display = 'block'; return; }
+    if (pwd.length < 6) { dom.registerError.textContent = '密码至少6位'; dom.registerError.style.display = 'block'; return; }
+    try {
+      await C.register(email, pwd);
+      dom.authModal.classList.remove('open');
+      showApp();
+    } catch (e) {
+      dom.registerError.textContent = '注册失败: ' + e.message;
+      dom.registerError.style.display = 'block';
     }
   }
 
   function showApp() {
     dom.mainContainer.style.display = 'block';
-    dom.workspaceBadge.textContent = C.state.currentWorkspace.charAt(0).toUpperCase();
-    C.initSampleData();
+    dom.userBadge.textContent = (C.state.userEmail || '?').charAt(0).toUpperCase();
     C.applyTheme();
     updateThemeIcon();
     initMatrix();
@@ -90,10 +131,11 @@
     startReminderCheck();
   }
 
-  dom.workspaceBadge.addEventListener('click', function() {
-    dom.workspaceModal.classList.add('open');
-    dom.workspaceName.value = '';
-    dom.workspaceName.focus();
+  dom.userBadge.addEventListener('click', function() {
+    if (confirm('确定要退出登录吗？')) {
+      localStorage.removeItem('ceqt_token');
+      location.reload();
+    }
   });
 
   // === Theme Toggle ===
@@ -791,5 +833,5 @@
   }
 
   // === Init ===
-  initWorkspace();
+  initAuth();
 })();
