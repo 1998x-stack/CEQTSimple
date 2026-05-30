@@ -607,3 +607,38 @@ POST /api/polish
 **Migration** (Phase 3.5): Backend assigns `user_id` from JWT, generates new UUIDs for task/subtask IDs. All other fields preserved.
 
 **Boolean fields** (Phase 1.2): `tasks.completed` and `subtasks.done` stored as `INTEGER` (0/1) in SQLite. Pydantic response models convert to `bool` in API responses.
+
+### Round 2 Grilling (2026-05-30)
+
+| # | Topic | Resolution |
+|---|---|---|
+| Q8 | Migration misses `tasks_<workspace>` key format | Scan ALL `tasks_*` localStorage keys, not just username-based ones. |
+| Q9 | `fallbackLocalStorage()` undefined | Defined as explicit path→function router. Polish unavailable offline. |
+| Q10 | Workspace DOM IDs conflict with new auth modal | Specified new IDs: `#authModal`, `#loginEmail`, `#loginPassword`, `#registerEmail`, `#registerPassword`, `#authTabs`. `initWorkspace()` → `initAuth()`. |
+| Q11 | `currentWorkspace` gone after Phase 4, badge empty | Badge shows first char of user's email from stored token. Replace `workspaceBadge` → `userBadge`. |
+
+### Spec Fixes Applied (Round 2)
+
+**Migration** (Phase 3.5 update): Scans all `localStorage` keys matching `tasks_*` pattern, collects all tasks, migrates to authenticated user. Handles `tasks_<username>`, `tasks_<workspace>`, and any other namespaced keys.
+
+**`fallbackLocalStorage` router** (Phase 4.2 addition):
+```javascript
+function fallbackLocalStorage(path, options) {
+  const body = options.body ? JSON.parse(options.body) : null;
+  const idMatch = path.match(/\/api\/tasks\/([^/]+)(\/complete)?/);
+  
+  if (path === '/api/tasks' && options.method === 'GET')       return C.getFilteredTasks();
+  if (path === '/api/tasks' && options.method === 'POST')       return C.addTask(body);
+  if (idMatch && options.method === 'PUT')                      return C.updateTask(idMatch[1], body);
+  if (idMatch && options.method === 'DELETE')                   return C.deleteTask(idMatch[1]);
+  if (idMatch && idMatch[2] === '/complete' && options.method === 'POST') return C.completeTask(idMatch[1]);
+  if (path === '/api/tasks/refresh')                            return C.getActiveTasks();
+  if (path === '/api/auth/me')                                  return { user: { email: C.state.userEmail || '' } };
+  if (path === '/api/polish')                                   throw new Error('Offline: 润色需要服务器连接');
+  throw new Error('Offline: unsupported operation');
+}
+```
+
+**Phase 4.1 update — New DOM IDs**: `index.html` gets `#authModal` (replaces `#workspaceModal`), `#loginEmail`, `#loginPassword`, `#registerEmail`, `#registerPassword`, `#authTabs`. `app.js` DOM refs and `initWorkspace()`/`enterWorkspace()` replaced with `initAuth()`/`handleLogin()`/`handleRegister()`.
+
+**Header badge** (Phase 4/6): `#workspaceBadge` → `#userBadge`. Shows first char of `C.state.userEmail` extracted from JWT.
