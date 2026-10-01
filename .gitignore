@@ -5,3 +5,4 @@ __pycache__/
 
 # Runtime database, logs, and audit events
 data/
+.vercel
